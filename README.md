@@ -21,7 +21,7 @@ jsChat have compatibility with **every** Linux distribution including **Termux**
 
 **Linux:**
 ```bash
-git clone https://github.com/YOUR_USER/just-another-chat.git
+git clone https://github.com/OxidAss/just-another-chat.git
 cd just-another-chat
 
 # install dependencies
@@ -36,7 +36,7 @@ sudo bash install.sh
 ```bash
 pkg install git clang make openssl
 
-git clone https://github.com/YOUR_USER/just-another-chat.git
+git clone https://github.com/OxidAss/just-another-chat.git
 cd just-another-chat
 
 bash install.sh
