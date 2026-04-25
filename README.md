@@ -23,10 +23,26 @@ jsChat have compatibility with **every** Linux distribution including **Termux**
 ```bash
 git clone https://github.com/YOUR_USER/just-another-chat.git
 cd just-another-chat
-chmod +x install.sh
-./install.sh # Termux
-sudo ./install.sh # Linux
+
+# install dependencies
+sudo apt install build-essential libssl-dev   # Debian/Ubuntu
+sudo pacman -S base-devel openssl             # Arch
+sudo dnf install gcc-c++ openssl-devel        # Fedora
+
+sudo bash install.sh
 ```
+
+**Termux (Android):**
+```bash
+pkg install git clang make openssl
+
+git clone https://github.com/YOUR_USER/just-another-chat.git
+cd just-another-chat
+
+bash install.sh
+```
+
+> On **Termux** — no sudo needed, dependencies install automatically.
 
 ---
 ## Usage
@@ -59,5 +75,6 @@ jschat -c 192.168.1.5:7777 passphrase nickname
 
 ---
 ## Security
-
-> All messages encrypted with a **fresh random IV** per message. Pre-shared passphrase model — no PKI required. Tampered messages are detected and dropped via **GCM auth tag**.
+> All messages encrypted with a **fresh random IV** per message.
+> Pre-shared passphrase model — no PKI required.
+> Tampered messages are detected and dropped via **GCM auth tag**.
