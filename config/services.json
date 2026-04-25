@@ -1,0 +1,30 @@
+{
+  "services": [
+    {
+      "name": "local",
+      "host": "127.0.0.1",
+      "port": 5050,
+      "description": "Local loopback"
+    },
+    {
+      "name": "home",
+      "host": "192.168.1.100",
+      "port": 5050,
+      "description": "Home server"
+    },
+    {
+      "name": "vps",
+      "host": "0.0.0.0",
+      "port": 7777,
+      "description": "VPS server"
+    }
+  ],
+  "defaults": {
+    "port": 5050,
+    "timeout_sec": 30,
+    "heartbeat_interval_sec": 10,
+    "max_clients": 16,
+    "reconnect_attempts": 3,
+    "reconnect_delay_ms": 2000
+  }
+}
