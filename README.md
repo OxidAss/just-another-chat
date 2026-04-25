@@ -38,6 +38,7 @@ pkg install git clang make openssl
 
 git clone https://github.com/OxidAss/just-another-chat.git
 cd just-another-chat
+make
 
 bash install.sh
 ```
