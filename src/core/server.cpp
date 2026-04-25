@@ -186,6 +186,8 @@ static void handle_client(int fd, std::string key, int heartbeat_sec) {
 // server input
 
 static void operator_loop(const std::string& raw_key) {
+    term::sys("press Enter to start chatting...");
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     while (running) {
         term::prompt("server");
         std::string text;
