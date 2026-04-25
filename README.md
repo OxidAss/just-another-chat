@@ -22,7 +22,7 @@ git clone https://github.com/OxidAss/just-another-chat.git
 cd just-another-chat
 
 # install dependencies
-sudo apt install build-essential libssl-dev   # Debian/Ubuntu
+sudo apt install build-essential libssl-dev openssl    # Debian/Ubuntu
 sudo pacman -S base-devel openssl             # Arch
 sudo dnf install gcc-c++ openssl-devel        # Fedora
 
