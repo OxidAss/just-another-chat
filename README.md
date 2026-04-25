@@ -5,7 +5,6 @@
 ---
 ## Compatibility
 jsChat have compatibility with **every** Linux distribution including **Termux** for Android.
-
 ---
 ## Features
 > End-to-end encryption with **AES-256-GCM**
@@ -13,10 +12,8 @@ jsChat have compatibility with **every** Linux distribution including **Termux**
 > Multi-client server with heartbeat & auto-disconnect
 > Reconnect support on connection loss
 > In-session commands: `/quit` `/who` `/help`
-
 ---
 ## Installation
-
 > Always build on the target machine — prebuilt binaries won't work across architectures.
 
 **Linux:**
@@ -38,16 +35,31 @@ pkg install git clang make openssl
 
 git clone https://github.com/OxidAss/just-another-chat.git
 cd just-another-chat
-make
-
 bash install.sh
 ```
 
 > On **Termux** — no sudo needed, dependencies install automatically.
+---
+## Update
+
+**Linux:**
+```bash
+cd just-another-chat
+git pull
+make clean && make
+sudo bash install.sh
+```
+
+**Termux (Android):**
+```bash
+cd just-another-chat
+git pull
+make clean && make
+bash install.sh
+```
 
 ---
 ## Usage
-
 **Start a server:**
 ```bash
 jschat -s 5050 passphrase
@@ -62,7 +74,6 @@ jschat -c 127.0.0.1 passphrase nickname
 ```bash
 jschat -c 192.168.1.5:7777 passphrase nickname
 ```
-
 ---
 ## Environment variables
 
