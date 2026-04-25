@@ -25,10 +25,9 @@ jsChat have compatibility with **every** Linux distribution including **Termux**
 ```bash
 git clone https://github.com/OxidAss/just-another-chat.git
 cd just-another-chat
-sudo bash install.sh
+chmod +x install.sh
+./install.sh
 ```
-
-> On **Termux** — no sudo needed, dependencies install automatically.
 
 ---
 
