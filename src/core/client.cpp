@@ -96,7 +96,6 @@ static bool run_session(const std::string& ip, int port,
     });
 
     // input loop
-    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     while (alive) {
         term::prompt(nick);
         std::string text;
