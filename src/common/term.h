@@ -64,8 +64,10 @@ inline void sec(const std::string& text) {
 
 // input prompt
 inline void prompt(const std::string& nick) {
-    std::cout << c::dim() << nick << c::reset()
-              << c::dim() << "> " << c::reset()
+    std::cout << c::dim() << "[" << c::reset()
+              << c::bold() << nick << c::reset()
+              << c::dim() << "]" << c::reset()
+              << c::cyan() << " ▸ " << c::reset()
               << std::flush;
 }
 
