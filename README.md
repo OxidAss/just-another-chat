@@ -1,18 +1,25 @@
 # Just Another Chat - Safe client for chatting via terminal.
 ---
+
 ### What's jsChat?
 >It's safe chat inspired by **netcat** tool for Kali Linux
+
 ---
+
 ## Compatibility
 jsChat have compatibility with **every** Linux distribution including **Termux** for Android.
+
 ---
+
 ## Features
 > End-to-end encryption with **AES-256-GCM**
 > Passphrase-based key derivation via **SHA-256**
 > Multi-client server with heartbeat & auto-disconnect
 > Reconnect support on connection loss
 > In-session commands: `/quit` `/who` `/help`
+
 ---
+
 ## Installation
 > Always build on the target machine — prebuilt binaries won't work across architectures.
 
@@ -39,7 +46,9 @@ bash install.sh
 ```
 
 > On **Termux** — no sudo needed, dependencies install automatically.
+
 ---
+
 ## Update
 
 **Linux:**
@@ -75,6 +84,7 @@ jschat -c 127.0.0.1 passphrase nickname
 jschat -c 192.168.1.5:7777 passphrase nickname
 ```
 ---
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -86,6 +96,7 @@ jschat -c 192.168.1.5:7777 passphrase nickname
 | `JSCHAT_HEARTBEAT` | `15` | Heartbeat interval (sec) |
 
 ---
+
 ## Security
 > All messages encrypted with a **fresh random IV** per message.
 > Pre-shared passphrase model — no PKI required.
