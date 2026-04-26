@@ -2,18 +2,32 @@
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
-#include <openssl/sha.h>
 #include <stdexcept>
 #include <cstring>
 
-static constexpr int IV_LEN  = 12;
-static constexpr int TAG_LEN = 16;
+static constexpr int IV_LEN      = 12;
+static constexpr int TAG_LEN     = 16;
+static constexpr int PBKDF2_ITER = 100000;
 
-std::string derive_key(const std::string& passphrase) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256(reinterpret_cast<const unsigned char*>(passphrase.data()),
-           passphrase.size(), hash);
-    return std::string(reinterpret_cast<char*>(hash), SHA256_DIGEST_LENGTH);
+std::string random_bytes(size_t n) {
+    std::string out(n, '\0');
+    if (RAND_bytes(reinterpret_cast<unsigned char*>(&out[0]), static_cast<int>(n)) != 1)
+        throw std::runtime_error("RAND_bytes failed");
+    return out;
+}
+
+std::string derive_key(const std::string& passphrase, const std::string& salt) {
+    static const std::string default_salt = "jschat-v1-salt-2025";
+    const std::string& s = salt.empty() ? default_salt : salt;
+
+    unsigned char key[32];
+    if (PKCS5_PBKDF2_HMAC(
+            passphrase.data(), static_cast<int>(passphrase.size()),
+            reinterpret_cast<const unsigned char*>(s.data()), static_cast<int>(s.size()),
+            PBKDF2_ITER, EVP_sha256(), 32, key) != 1)
+        throw std::runtime_error("PBKDF2 failed");
+
+    return std::string(reinterpret_cast<char*>(key), 32);
 }
 
 std::string aes_encrypt(const std::string& plaintext, const std::string& key32) {

@@ -9,21 +9,54 @@
 #include <atomic>
 #include <mutex>
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <iostream>
+#include <algorithm>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <chrono>
 
+// limits
+static constexpr size_t MAX_NICK_LEN    = 32;
+static constexpr size_t MAX_MSG_LEN     = 2048;
+static constexpr int    RATE_WINDOW_SEC = 10;   // sliding window
+static constexpr int    RATE_MAX_CONN   = 5;    // max new conns per IP per window
+
 struct Peer {
     int         fd;
     std::string nick;
+    std::string addr;
     std::chrono::steady_clock::time_point last_pong;
 };
 
 static std::mutex          peers_mx;
 static std::map<int, Peer> peers;
 static std::atomic<bool>   running{true};
+
+// rate limiting — tracks connection timestamps per IP
+static std::mutex rate_mx;
+static std::unordered_map<std::string, std::vector<std::chrono::steady_clock::time_point>> rate_map;
+
+static bool rate_check(const std::string& ip) {
+    auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lk(rate_mx);
+    auto& times = rate_map[ip];
+    // evict old entries outside the window
+    times.erase(std::remove_if(times.begin(), times.end(), [&](auto& t) {
+        return std::chrono::duration_cast<std::chrono::seconds>(now - t).count() > RATE_WINDOW_SEC;
+    }), times.end());
+    if ((int)times.size() >= RATE_MAX_CONN) return false;
+    times.push_back(now);
+    return true;
+}
+
+static bool valid_nick(const std::string& nick) {
+    if (nick.empty() || nick.size() > MAX_NICK_LEN) return false;
+    for (char c : nick)
+        if (!isalnum(c) && c != '_' && c != '-') return false;
+    return true;
+}
 
 static void broadcast(const std::string& frame, int exclude_fd = -1) {
     std::lock_guard<std::mutex> lk(peers_mx);
@@ -43,6 +76,21 @@ static void drop_peer(int fd) {
 }
 
 static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
+    const std::string addr = peer_addr(fd);
+
+    // rate limit check
+    // extract IP without port for rate limiting
+    std::string ip = addr;
+    auto colon = addr.rfind(':');
+    if (colon != std::string::npos) ip = addr.substr(0, colon);
+
+    if (!rate_check(ip)) {
+        send_frame(fd, "ERR:rate_limited");
+        std::lock_guard<std::mutex> lk(cout_mutex);
+        term::sec("rate limited: " + addr);
+        close(fd); return;
+    }
+
     std::string hs;
     if (!recv_frame(fd, hs)) { close(fd); return; }
 
@@ -54,6 +102,24 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
 
     const std::string nick    = hs.substr(0, sep);
     const std::string claimed = hs.substr(sep + 1);
+
+    // nick validation
+    if (!valid_nick(nick)) {
+        send_frame(fd, "ERR:invalid_nick");
+        close(fd); return;
+    }
+
+    // check nick uniqueness
+    {
+        std::lock_guard<std::mutex> lk(peers_mx);
+        for (auto& [_, p] : peers) {
+            if (p.nick == nick) {
+                send_frame(fd, "ERR:nick_taken");
+                close(fd); return;
+            }
+        }
+    }
+
     const std::string raw_key = derive_key(passphrase);
 
     std::string expected;
@@ -66,19 +132,20 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
     if (claimed != expected) {
         send_frame(fd, "ERR:wrong_key");
         std::lock_guard<std::mutex> lk(cout_mutex);
-        term::sec("rejected " + nick + " — wrong passphrase");
+        term::sec("rejected " + nick + " (" + addr + ") — wrong passphrase");
         close(fd); return;
     }
 
     {
         std::lock_guard<std::mutex> lk(peers_mx);
-        peers[fd] = Peer{ fd, nick, std::chrono::steady_clock::now() };
+        peers[fd] = Peer{ fd, nick, addr, std::chrono::steady_clock::now() };
     }
     send_frame(fd, "OK");
 
     {
         std::lock_guard<std::mutex> lk(cout_mutex);
-        term::sys("connected: " + nick + "  [total: " + std::to_string(peer_count()) + "]");
+        term::sys("connected: " + nick + " (" + addr + ")  [total: " +
+                  std::to_string(peer_count()) + "]");
     }
 
     {
@@ -92,7 +159,6 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
         while (alive) {
             std::this_thread::sleep_for(std::chrono::seconds(heartbeat_sec));
             if (!alive) break;
-
             Message ping; ping.type = MsgType::PING; ping.nick = "server";
             try {
                 if (!send_frame(fd, aes_encrypt(ping.encode(), raw_key))) break;
@@ -130,6 +196,12 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
         if (!Message::decode(plain, msg)) continue;
 
         if (msg.type == MsgType::CHAT) {
+            // enforce message length limit
+            if (msg.payload.size() > MAX_MSG_LEN) {
+                std::lock_guard<std::mutex> lk(cout_mutex);
+                term::sec("oversized message from " + nick + " — dropped");
+                continue;
+            }
             {
                 std::lock_guard<std::mutex> lk(cout_mutex);
                 term::msg(msg.nick, msg.payload);
@@ -152,7 +224,8 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
 
     {
         std::lock_guard<std::mutex> lk(cout_mutex);
-        term::sys("disconnected: " + nick + "  [total: " + std::to_string(peer_count()) + "]");
+        term::sys("disconnected: " + nick + " (" + addr + ")  [total: " +
+                  std::to_string(peer_count()) + "]");
     }
 
     {
@@ -178,7 +251,7 @@ static void operator_loop(const std::string& raw_key) {
             std::lock_guard<std::mutex> lk2(cout_mutex);
             term::sys("online: " + std::to_string(peers.size()) + " client(s)");
             for (auto& [fd, p] : peers)
-                term::sys("  " + p.nick + " [fd=" + std::to_string(fd) + "]");
+                term::sys("  " + p.nick + " (" + p.addr + ") [fd=" + std::to_string(fd) + "]");
             continue;
         }
 
@@ -195,7 +268,8 @@ void run_server(const std::string& passphrase, const ServerOpts& opts) {
     try { sfd = create_server_socket(opts.port); }
     catch (const std::exception& e) { term::err(e.what()); return; }
 
-    term::sys("jschat server  port=" + std::to_string(opts.port) + "  enc=AES-256-GCM");
+    term::sys("jschat server  port=" + std::to_string(opts.port) +
+              "  enc=AES-256-GCM  IPv4+IPv6");
     term::sys("commands: /who  /quit");
 
     std::thread accept_t([&, sfd]() {

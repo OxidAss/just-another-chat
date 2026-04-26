@@ -13,32 +13,33 @@
 #include <sys/socket.h>
 #include <chrono>
 
+static constexpr size_t MAX_MSG_LEN = 2048;
+
 static bool do_handshake(int fd, const std::string& nick, const std::string& raw_key) {
     std::string hex;
     hex.reserve(raw_key.size() * 2);
     for (unsigned char c : raw_key) {
-        char buf[3];
-        snprintf(buf, sizeof(buf), "%02x", c);
+        char buf[3]; snprintf(buf, sizeof(buf), "%02x", c);
         hex += buf;
     }
     if (!send_frame(fd, nick + ":" + hex)) return false;
     std::string resp;
     if (!recv_frame(fd, resp)) return false;
-    if (resp.rfind("ERR", 0) == 0) { term::err("server: " + resp); return false; }
+    if (resp.rfind("ERR", 0) == 0) { term::err("server rejected: " + resp.substr(4)); return false; }
     return resp == "OK";
 }
 
-static bool run_session(const std::string& ip, int port,
+static bool run_session(const std::string& host, int port,
                         const std::string& nick,
                         const std::string& passphrase,
                         const ClientOpts&  opts)
 {
     const std::string raw_key = derive_key(passphrase);
 
-    term::sys("connecting to " + ip + ":" + std::to_string(port));
+    term::sys("connecting to " + host + ":" + std::to_string(port));
 
     int fd;
-    try { fd = connect_to_server(ip, port, opts.timeout_sec); }
+    try { fd = connect_to_server(host, port, opts.timeout_sec); }
     catch (const std::exception& e) { term::err(e.what()); return false; }
 
     if (!do_handshake(fd, nick, raw_key)) { close(fd); return false; }
@@ -109,12 +110,18 @@ static bool run_session(const std::string& ip, int port,
             continue;
         }
 
+        // enforce message length
+        if (text.size() > MAX_MSG_LEN) {
+            std::lock_guard<std::mutex> lk(cout_mutex);
+            term::err("message too long (max " + std::to_string(MAX_MSG_LEN) + " chars)");
+            continue;
+        }
+
         Message m; m.type = MsgType::CHAT; m.nick = nick; m.payload = text;
         try {
             if (!send_frame(fd, aes_encrypt(m.encode(), raw_key))) {
                 term::err("send failed — connection lost");
-                alive = false;
-                break;
+                alive = false; break;
             }
         } catch (const std::exception& e) { term::err(e.what()); }
     }
@@ -125,7 +132,7 @@ static bool run_session(const std::string& ip, int port,
     return user_quit.load();
 }
 
-void run_client(const std::string& ip, int port,
+void run_client(const std::string& host, int port,
                 const std::string& nick,
                 const std::string& passphrase,
                 const ClientOpts&  opts)
@@ -138,7 +145,7 @@ void run_client(const std::string& ip, int port,
                       std::to_string(opts.reconnect_attempts) + ")");
             std::this_thread::sleep_for(std::chrono::milliseconds(opts.reconnect_delay_ms));
         }
-        if (run_session(ip, port, nick, passphrase, opts)) {
+        if (run_session(host, port, nick, passphrase, opts)) {
             term::sys("disconnected");
             return;
         }
