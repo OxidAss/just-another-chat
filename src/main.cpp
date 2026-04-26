@@ -26,71 +26,44 @@ int main(int argc, char* argv[]) {
 
     const char* flag = argv[1];
 
-    // help
     if (strcmp(flag, "-h") == 0 || strcmp(flag, "--help") == 0) {
-        print_usage(argv[0]);
-        return 0;
+        print_usage(argv[0]); return 0;
     }
 
-    // server arguments
     if (strcmp(flag, "-s") == 0) {
         if (argc < 4) {
             std::cerr << "error: -s requires <port> <passphrase>\n";
-            print_usage(argv[0]);
-            return 1;
+            print_usage(argv[0]); return 1;
         }
-
         int port = std::atoi(argv[2]);
         if (port <= 0 || port > 65535) {
-            std::cerr << "error: invalid port '" << argv[2] << "'\n";
-            return 1;
+            std::cerr << "error: invalid port '" << argv[2] << "'\n"; return 1;
         }
-
-        std::string passphrase = argv[3];
-
         ServerOpts opts;
         opts.port = port;
-
-        // optional env
-        if (const char* v = std::getenv("JSCHAT_MAX_CLIENTS"))
-            opts.max_clients = std::atoi(v);
-        if (const char* v = std::getenv("JSCHAT_HEARTBEAT"))
-            opts.heartbeat_sec = std::atoi(v);
-
-        run_server(passphrase, opts);
+        if (const char* v = std::getenv("JSCHAT_MAX_CLIENTS")) opts.max_clients   = std::atoi(v);
+        if (const char* v = std::getenv("JSCHAT_HEARTBEAT"))   opts.heartbeat_sec = std::atoi(v);
+        run_server(argv[3], opts);
         return 0;
     }
 
-    // client
     if (strcmp(flag, "-c") == 0) {
         if (argc < 5) {
             std::cerr << "error: -c requires <host> <passphrase> <nickname>\n";
-            print_usage(argv[0]);
-            return 1;
+            print_usage(argv[0]); return 1;
         }
-
-        std::string host       = argv[2];
-        std::string passphrase = argv[3];
-        std::string nick       = argv[4];
-
-        // optional port
+        std::string host = argv[2];
         int port = 5050;
         auto colon = host.find(':');
         if (colon != std::string::npos) {
             port = std::atoi(host.substr(colon + 1).c_str());
             host = host.substr(0, colon);
         }
-
-        // env overrides
         ClientOpts opts;
-        if (const char* v = std::getenv("JSCHAT_PORT"))
-            port = std::atoi(v);
-        if (const char* v = std::getenv("JSCHAT_TIMEOUT"))
-            opts.timeout_sec = std::atoi(v);
-        if (const char* v = std::getenv("JSCHAT_RECONNECT"))
-            opts.reconnect_attempts = std::atoi(v);
-
-        run_client(host, port, nick, passphrase, opts);
+        if (const char* v = std::getenv("JSCHAT_PORT"))      port                   = std::atoi(v);
+        if (const char* v = std::getenv("JSCHAT_TIMEOUT"))   opts.timeout_sec       = std::atoi(v);
+        if (const char* v = std::getenv("JSCHAT_RECONNECT")) opts.reconnect_attempts = std::atoi(v);
+        run_client(host, port, argv[4], argv[3], opts);
         return 0;
     }
 

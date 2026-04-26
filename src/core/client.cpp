@@ -13,33 +13,27 @@
 #include <sys/socket.h>
 #include <chrono>
 
-// handshake
-
-static bool do_handshake(int fd, const std::string& nick,
-                         const std::string& raw_key) {
+static bool do_handshake(int fd, const std::string& nick, const std::string& raw_key) {
     std::string hex;
+    hex.reserve(raw_key.size() * 2);
     for (unsigned char c : raw_key) {
-        char buf[3]; snprintf(buf, sizeof(buf), "%02x", c);
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02x", c);
         hex += buf;
     }
     if (!send_frame(fd, nick + ":" + hex)) return false;
     std::string resp;
     if (!recv_frame(fd, resp)) return false;
-    if (resp.substr(0, 3) == "ERR") {
-        term::err("server: " + resp);
-        return false;
-    }
+    if (resp.rfind("ERR", 0) == 0) { term::err("server: " + resp); return false; }
     return resp == "OK";
 }
 
-// session
-// returns true and false if user quit clean or with errors
 static bool run_session(const std::string& ip, int port,
                         const std::string& nick,
                         const std::string& passphrase,
                         const ClientOpts&  opts)
 {
-    std::string raw_key = derive_key(passphrase);
+    const std::string raw_key = derive_key(passphrase);
 
     term::sys("connecting to " + ip + ":" + std::to_string(port));
 
@@ -55,7 +49,6 @@ static bool run_session(const std::string& ip, int port,
     std::atomic<bool> alive{true};
     std::atomic<bool> user_quit{false};
 
-    // recv thread
     std::thread recv_t([&, fd]() {
         while (alive) {
             std::string frame;
@@ -72,39 +65,30 @@ static bool run_session(const std::string& ip, int port,
             Message msg;
             if (!Message::decode(plain, msg)) continue;
 
-            switch (msg.type) {
-                case MsgType::CHAT: {
-                    std::lock_guard<std::mutex> lk(cout_mutex);
-                    term::msg(msg.nick, msg.payload);
-                    term::prompt(nick);
-                    break;
-                }
-                case MsgType::PING: {
-                    Message pong; pong.type = MsgType::PONG; pong.nick = nick;
-                    try { send_frame(fd, aes_encrypt(pong.encode(), raw_key)); }
-                    catch (...) {}
-                    break;
-                }
-                case MsgType::QUIT:
-                    alive = false;
-                    break;
-                default: break;
+            if (msg.type == MsgType::CHAT) {
+                std::lock_guard<std::mutex> lk(cout_mutex);
+                term::msg(msg.nick, msg.payload);
+                term::prompt(nick);
+            } else if (msg.type == MsgType::PING) {
+                Message pong; pong.type = MsgType::PONG; pong.nick = nick;
+                try { send_frame(fd, aes_encrypt(pong.encode(), raw_key)); } catch (...) {}
+            } else if (msg.type == MsgType::QUIT) {
+                alive = false;
             }
         }
         alive = false;
         shutdown(fd, SHUT_RDWR);
     });
 
-    // input loop
     term::sys("press Enter to start chatting...");
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
     while (alive) {
         term::prompt(nick);
         std::string text;
         if (!std::getline(std::cin, text)) break;
         if (text.empty()) continue;
 
-        // Commands
         if (text == "/quit" || text == "/exit") {
             Message q; q.type = MsgType::QUIT; q.nick = nick;
             try { send_frame(fd, aes_encrypt(q.encode(), raw_key)); } catch (...) {}
@@ -129,7 +113,8 @@ static bool run_session(const std::string& ip, int port,
         try {
             if (!send_frame(fd, aes_encrypt(m.encode(), raw_key))) {
                 term::err("send failed — connection lost");
-                alive = false; break;
+                alive = false;
+                break;
             }
         } catch (const std::exception& e) { term::err(e.what()); }
     }
@@ -139,8 +124,6 @@ static bool run_session(const std::string& ip, int port,
     recv_t.join();
     return user_quit.load();
 }
-
-// entry with reconnect
 
 void run_client(const std::string& ip, int port,
                 const std::string& nick,
@@ -153,14 +136,12 @@ void run_client(const std::string& ip, int port,
                       std::to_string(opts.reconnect_delay_ms / 1000) +
                       "s  (" + std::to_string(attempt) + "/" +
                       std::to_string(opts.reconnect_attempts) + ")");
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(opts.reconnect_delay_ms));
+            std::this_thread::sleep_for(std::chrono::milliseconds(opts.reconnect_delay_ms));
         }
-
-        bool clean = run_session(ip, port, nick, passphrase, opts);
-        if (clean) { term::sys("disconnected"); return; }
-        if (attempt == opts.reconnect_attempts)
-            term::err("could not connect after " +
-                      std::to_string(opts.reconnect_attempts) + " attempts");
+        if (run_session(ip, port, nick, passphrase, opts)) {
+            term::sys("disconnected");
+            return;
+        }
     }
+    term::err("could not connect after " + std::to_string(opts.reconnect_attempts) + " attempts");
 }

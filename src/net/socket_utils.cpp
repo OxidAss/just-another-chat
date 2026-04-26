@@ -9,23 +9,16 @@
 #include <stdexcept>
 #include <cerrno>
 
-// helpers
-
 static void set_keepalive(int fd) {
     int yes = 1;
-    setsockopt(fd, SOL_SOCKET,  SO_KEEPALIVE, &yes, sizeof(yes));
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
 #ifdef TCP_KEEPIDLE
     int idle = 20;
-    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle, sizeof(idle));
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
 #endif
     int intvl = 5, cnt = 3;
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
-}
-
-static void set_reuseaddr(int fd) {
-    int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 }
 
 static bool send_all(int fd, const char* buf, size_t len) {
@@ -48,13 +41,12 @@ static bool recv_all(int fd, char* buf, size_t len) {
     return true;
 }
 
-// public api
-
 int create_server_socket(int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) throw std::runtime_error("socket() failed");
 
-    set_reuseaddr(fd);
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
     sockaddr_in addr{};
     addr.sin_family      = AF_INET;
@@ -80,7 +72,6 @@ int accept_client(int server_fd) {
     return fd;
 }
 
-// connecting to the server
 int connect_to_server(const std::string& ip, int port, int timeout_sec) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) throw std::runtime_error("socket() failed");
@@ -123,13 +114,10 @@ int connect_to_server(const std::string& ip, int port, int timeout_sec) {
     return fd;
 }
 
-// framing
-
 bool send_frame(int fd, const std::string& data) {
     uint32_t nlen = htonl(static_cast<uint32_t>(data.size()));
     if (!send_all(fd, reinterpret_cast<const char*>(&nlen), 4)) return false;
-    if (!data.empty())
-        if (!send_all(fd, data.data(), data.size())) return false;
+    if (!data.empty() && !send_all(fd, data.data(), data.size())) return false;
     return true;
 }
 
@@ -138,7 +126,7 @@ bool recv_frame(int fd, std::string& out) {
     if (!recv_all(fd, reinterpret_cast<char*>(&nlen), 4)) return false;
     uint32_t len = ntohl(nlen);
     if (len == 0) { out.clear(); return true; }
-    if (len > 64 * 1024) return false; // sanity cap 64 KiB
+    if (len > 64 * 1024) return false;
     out.resize(len);
     return recv_all(fd, out.data(), len);
 }
