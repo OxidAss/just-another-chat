@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <chrono>
+#include <vector>
 
 // limits
 static constexpr size_t MAX_NICK_LEN    = 32;
