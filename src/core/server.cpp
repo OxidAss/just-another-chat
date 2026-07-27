@@ -23,8 +23,8 @@
 // limits
 static constexpr size_t MAX_NICK_LEN    = 32;
 static constexpr size_t MAX_MSG_LEN     = 2048;
-static constexpr int    RATE_WINDOW_SEC = 10;   // sliding window
-static constexpr int    RATE_MAX_CONN   = 5;    // max new conns per IP per window
+static constexpr int    RATE_WINDOW_SEC = 10;
+static constexpr int    RATE_MAX_CONN   = 5;
 
 namespace {
     struct RawTerm {
@@ -63,7 +63,6 @@ static bool rate_check(const std::string& ip) {
     auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lk(rate_mx);
     auto& times = rate_map[ip];
-    // evict old entries outside the window
     times.erase(std::remove_if(times.begin(), times.end(), [&](auto& t) {
         return std::chrono::duration_cast<std::chrono::seconds>(now - t).count() > RATE_WINDOW_SEC;
     }), times.end());
@@ -216,12 +215,16 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
         if (!Message::decode(plain, msg)) continue;
 
         if (msg.type == MsgType::CHAT) {
-            // enforce message length limit
             if (msg.payload.size() > MAX_MSG_LEN) {
                 std::lock_guard<std::mutex> lk(cout_mutex);
                 term::sec("oversized message from " + nick + " — dropped");
                 continue;
             }
+
+            if (msg.payload.empty() || msg.payload.find_first_not_of(" \t") == std::string::npos) {
+                continue;
+            }
+
             {
                 std::lock_guard<std::mutex> lk(cout_mutex);
                 term::msg(msg.nick, msg.payload);
@@ -280,7 +283,6 @@ static void operator_loop(const std::string& raw_key) {
         ssize_t n = read(STDIN_FILENO, &ch, 1);
         if (n < 0) break;
         if (n == 0) continue;
-
         if (ch == '\033') { 
             char seq[3];
             if (read(STDIN_FILENO, &seq[0], 1) > 0 && seq[0] == '[') {
@@ -298,8 +300,16 @@ static void operator_loop(const std::string& raw_key) {
             {
                 std::lock_guard<std::mutex> lk(cout_mutex);
                 text = term::input::buf();
-                term::input::buf().clear();
-                term::_redraw_input();
+
+                if (text.empty()) {
+                } else {
+                    term::input::buf().clear();
+                    term::_redraw_input();
+
+                    if (text.find_first_not_of(" \t") == std::string::npos) {
+                        text = ""; 
+                    }
+                }
             }
 
             if (text.empty()) continue;
@@ -333,7 +343,6 @@ static void operator_loop(const std::string& raw_key) {
             std::lock_guard<std::mutex> lk(cout_mutex);
             std::string& buf = term::input::buf();
             if (!buf.empty()) {
-                // utf 8 backspace support
                 while (!buf.empty() && (buf.back() & 0xC0) == 0x80) {
                     buf.pop_back();
                 }
