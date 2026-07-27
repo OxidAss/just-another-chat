@@ -14,6 +14,7 @@
 #include <iostream>
 #include <algorithm>
 #include <unistd.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <chrono>
 #include <vector>
@@ -55,7 +56,7 @@ static std::mutex          peers_mx;
 static std::map<int, Peer> peers;
 static std::atomic<bool>   running{true};
 
-// rate limiting — tracks connection timestamps per IP
+// rate limiting
 static std::mutex rate_mx;
 static std::unordered_map<std::string, std::vector<std::chrono::steady_clock::time_point>> rate_map;
 
@@ -161,10 +162,11 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
     }
     send_frame(fd, "OK");
 
+    size_t current_peers = peer_count();
     {
         std::lock_guard<std::mutex> lk(cout_mutex);
         term::sys("connected: " + nick + " (" + addr + ")  [total: " +
-                  std::to_string(peer_count()) + "]");
+                  std::to_string(current_peers) + "]");
     }
 
     {
@@ -230,6 +232,19 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
                 term::msg(msg.nick, msg.payload);
             }
             broadcast(frame, fd);
+        } else if (msg.type == MsgType::LIST_REQ) {
+            std::string user_list = "online: ";
+            {
+                std::lock_guard<std::mutex> lk(peers_mx);
+                bool first = true;
+                for (auto& [_, p] : peers) {
+                    if (!first) user_list += ", ";
+                    user_list += p.nick;
+                    first = false;
+                }
+            }
+            Message resp; resp.type = MsgType::LIST_RESP; resp.nick = "server"; resp.payload = user_list;
+            try { send_frame(fd, aes_encrypt(resp.encode(), raw_key)); } catch (...) {}
         } else if (msg.type == MsgType::PONG) {
             std::lock_guard<std::mutex> lk(peers_mx);
             auto it = peers.find(fd);
@@ -244,10 +259,11 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
     hb.detach();
     drop_peer(fd);
 
+    size_t final_peers = peer_count();
     {
         std::lock_guard<std::mutex> lk(cout_mutex);
         term::sys("disconnected: " + nick + " (" + addr + ")  [total: " +
-                  std::to_string(peer_count()) + "]");
+                  std::to_string(final_peers) + "]");
     }
 
     {
@@ -284,13 +300,16 @@ static void operator_loop(const std::string& raw_key) {
         if (n < 0) break;
         if (n == 0) continue;
         if (ch == '\033') { 
-            char seq[3];
-            if (read(STDIN_FILENO, &seq[0], 1) > 0 && seq[0] == '[') {
-                if (read(STDIN_FILENO, &seq[1], 1) > 0) {
-                    if (seq[1] >= '0' && seq[1] <= '9') {
-                        read(STDIN_FILENO, &seq[2], 1);
-                    }
-                }
+            char seq;
+            struct timeval tv{0, 20000};
+            fd_set fds;
+            FD_ZERO(&fds);
+            FD_SET(STDIN_FILENO, &fds);
+            while (select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv) > 0) {
+                if (read(STDIN_FILENO, &seq, 1) <= 0) break;
+                tv = {0, 10000};
+                FD_ZERO(&fds);
+                FD_SET(STDIN_FILENO, &fds);
             }
             continue;
         }
@@ -300,14 +319,13 @@ static void operator_loop(const std::string& raw_key) {
             {
                 std::lock_guard<std::mutex> lk(cout_mutex);
                 text = term::input::buf();
-
+                term::input::buf().clear();
                 if (text.empty()) {
-                } else {
-                    term::input::buf().clear();
                     term::_redraw_input();
-
+                } else {
                     if (text.find_first_not_of(" \t") == std::string::npos) {
-                        text = ""; 
+                        text = "";
+                        term::_redraw_input();
                     }
                 }
             }
@@ -318,13 +336,25 @@ static void operator_loop(const std::string& raw_key) {
                 running = false; 
                 break; 
             }
+            if (text == "/clear") {
+                std::lock_guard<std::mutex> lk(cout_mutex);
+                term::clear_screen();
+                continue;
+            }
 
             if (text == "/who") {
-                std::lock_guard<std::mutex> lk(peers_mx);
+                std::vector<std::pair<std::string, std::string>> list;
+                size_t total = 0;
+                {
+                    std::lock_guard<std::mutex> lk(peers_mx);
+                    total = peers.size();
+                    for (auto& [fd, p] : peers)
+                        list.push_back({p.nick, p.addr + " [fd=" + std::to_string(fd) + "]"});
+                }
                 std::lock_guard<std::mutex> lk2(cout_mutex);
-                term::sys("online: " + std::to_string(peers.size()) + " client(s)");
-                for (auto& [fd, p] : peers)
-                    term::sys("  " + p.nick + " (" + p.addr + ") [fd=" + std::to_string(fd) + "]");
+                term::sys("online: " + std::to_string(total) + " client(s)");
+                for (auto& item : list)
+                    term::sys("  " + item.first + " (" + item.second + ")");
                 continue;
             }
 
@@ -353,9 +383,25 @@ static void operator_loop(const std::string& raw_key) {
             }
 
         } else if (static_cast<unsigned char>(ch) >= 32) {
+            std::string chars(1, ch);
+            unsigned char uc = static_cast<unsigned char>(ch);
+            int needed = 0;
+            if ((uc & 0xE0) == 0xC0) needed = 1;
+            else if ((uc & 0xF0) == 0xE0) needed = 2;
+            else if ((uc & 0xF8) == 0xF0) needed = 3;
+
+            for (int i = 0; i < needed; i++) {
+                char next_ch;
+                if (read(STDIN_FILENO, &next_ch, 1) == 1) {
+                    chars += next_ch;
+                } else {
+                    break;
+                }
+            }
+
             std::lock_guard<std::mutex> lk(cout_mutex);
-            if (term::input::buf().size() < MAX_MSG_LEN) {
-                term::input::buf() += ch;
+            if (term::input::buf().size() + chars.size() <= MAX_MSG_LEN) {
+                term::input::buf() += chars;
                 term::_redraw_input();
             }
         }

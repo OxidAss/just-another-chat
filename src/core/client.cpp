@@ -10,6 +10,7 @@
 #include <string>
 #include <iostream>
 #include <unistd.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <termios.h>
 #include <signal.h>
@@ -87,6 +88,9 @@ static bool run_session(const std::string& host, int port,
             if (msg.type == MsgType::CHAT) {
                 std::lock_guard<std::mutex> lk(cout_mutex);
                 term::msg(msg.nick, msg.payload);
+            } else if (msg.type == MsgType::LIST_RESP) {
+                std::lock_guard<std::mutex> lk(cout_mutex);
+                term::sys(msg.payload);
             } else if (msg.type == MsgType::PING) {
                 Message pong; pong.type = MsgType::PONG; pong.nick = nick;
                 try { send_frame(fd, aes_encrypt(pong.encode(), raw_key)); } catch (...) {}
@@ -124,16 +128,17 @@ static bool run_session(const std::string& host, int port,
         ssize_t n = read(STDIN_FILENO, &ch, 1);
         if (n < 0) break;
         if (n == 0) continue;
-
-        // ignore the esc
         if (ch == '\033') { 
-            char seq[3];
-            if (read(STDIN_FILENO, &seq[0], 1) > 0 && seq[0] == '[') {
-                if (read(STDIN_FILENO, &seq[1], 1) > 0) {
-                    if (seq[1] >= '0' && seq[1] <= '9') {
-                        read(STDIN_FILENO, &seq[2], 1);
-                    }
-                }
+            char seq;
+            struct timeval tv{0, 20000};
+            fd_set fds;
+            FD_ZERO(&fds);
+            FD_SET(STDIN_FILENO, &fds);
+            while (select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv) > 0) {
+                if (read(STDIN_FILENO, &seq, 1) <= 0) break;
+                tv = {0, 10000};
+                FD_ZERO(&fds);
+                FD_SET(STDIN_FILENO, &fds);
             }
             continue;
         }
@@ -144,7 +149,9 @@ static bool run_session(const std::string& host, int port,
                 std::lock_guard<std::mutex> lk(cout_mutex);
                 text = term::input::buf();
                 term::input::buf().clear();
-                term::_redraw_input();
+                if (text.empty()) {
+                    term::_redraw_input();
+                }
             }
 
             if (text.empty()) continue;
@@ -156,16 +163,22 @@ static bool run_session(const std::string& host, int port,
                 alive = false;
                 break;
             }
-            if (text == "/who") {
+            if (text == "/clear") {
                 std::lock_guard<std::mutex> lk(cout_mutex);
-                term::sys("you are: " + nick);
+                term::clear_screen();
+                continue;
+            }
+            if (text == "/who") {
+                Message req; req.type = MsgType::LIST_REQ; req.nick = nick;
+                try { send_frame(fd, aes_encrypt(req.encode(), raw_key)); } catch (...) {}
                 continue;
             }
             if (text == "/help") {
                 std::lock_guard<std::mutex> lk(cout_mutex);
-                term::sys("/quit   disconnect");
-                term::sys("/who    show your nick");
-                term::sys("/help   this message");
+                term::sys("/quit    disconnect");
+                term::sys("/who     list online users");
+                term::sys("/clear   clear screen");
+                term::sys("/help    this message");
                 continue;
             }
             if (text.size() > MAX_MSG_LEN) {
@@ -192,7 +205,6 @@ static bool run_session(const std::string& host, int port,
             std::lock_guard<std::mutex> lk(cout_mutex);
             std::string& buf = term::input::buf();
             if (!buf.empty()) {
-                // correct deleting
                 while (!buf.empty() && (buf.back() & 0xC0) == 0x80) {
                     buf.pop_back();
                 }
@@ -203,10 +215,26 @@ static bool run_session(const std::string& host, int port,
             }
 
         } else if (static_cast<unsigned char>(ch) >= 32) {
+            std::string chars(1, ch);
+            unsigned char uc = static_cast<unsigned char>(ch);
+            int needed = 0;
+            if ((uc & 0xE0) == 0xC0) needed = 1;
+            else if ((uc & 0xF0) == 0xE0) needed = 2;
+            else if ((uc & 0xF8) == 0xF0) needed = 3;
+
+            for (int i = 0; i < needed; i++) {
+                char next_ch;
+                if (read(STDIN_FILENO, &next_ch, 1) == 1) {
+                    chars += next_ch;
+                } else {
+                    break;
+                }
+            }
+
             std::lock_guard<std::mutex> lk(cout_mutex);
-            if (term::input::buf().size() < MAX_MSG_LEN) {
-                term::input::buf() += ch;
-                term::_redraw_input(); // redrawing
+            if (term::input::buf().size() + chars.size() <= MAX_MSG_LEN) {
+                term::input::buf() += chars;
+                term::_redraw_input();
             }
         }
     }

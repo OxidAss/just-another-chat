@@ -4,13 +4,15 @@
 
 // wire message types
 enum class MsgType : uint8_t {
-    HANDSHAKE = 0x01,  // "nick\0passphrase-hash" — sent unencrypted once
-    CHAT      = 0x02,  // normal chat text
-    PING      = 0x03,  // heartbeat ping
-    PONG      = 0x04,  // heartbeat pong
-    QUIT      = 0x05,  // graceful disconnect
-    SERVER_OK = 0x06,  // server accepted handshake
-    SERVER_ERR= 0x07,  // server rejected (wrong key, etc.)
+    HANDSHAKE = 0x01,
+    CHAT      = 0x02,
+    PING      = 0x03,
+    PONG      = 0x04,
+    QUIT      = 0x05,
+    SERVER_OK = 0x06,
+    SERVER_ERR= 0x07,
+    LIST_REQ  = 0x08,
+    LIST_RESP = 0x09,
 };
 
 struct Message {
