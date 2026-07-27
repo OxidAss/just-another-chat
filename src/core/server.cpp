@@ -17,12 +17,32 @@
 #include <sys/socket.h>
 #include <chrono>
 #include <vector>
+#include <termios.h>
+#include <signal.h>
 
 // limits
 static constexpr size_t MAX_NICK_LEN    = 32;
 static constexpr size_t MAX_MSG_LEN     = 2048;
 static constexpr int    RATE_WINDOW_SEC = 10;   // sliding window
 static constexpr int    RATE_MAX_CONN   = 5;    // max new conns per IP per window
+
+namespace {
+    struct RawTerm {
+        struct termios saved{};
+        explicit RawTerm() {
+            tcgetattr(STDIN_FILENO, &saved);
+            struct termios raw = saved;
+            raw.c_lflag &= ~(ICANON | ECHO);
+            raw.c_cc[VMIN]  = 0;
+            raw.c_cc[VTIME] = 1;
+            tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+        }
+        ~RawTerm() { tcsetattr(STDIN_FILENO, TCSANOW, &saved); }
+    };
+
+    std::atomic<bool> g_resized{false};
+    void on_sigwinch(int) { g_resized = true; }
+}
 
 struct Peer {
     int         fd;
@@ -80,7 +100,6 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
     const std::string addr = peer_addr(fd);
 
     // rate limit check
-    // extract IP without port for rate limiting
     std::string ip = addr;
     auto colon = addr.rfind(':');
     if (colon != std::string::npos) ip = addr.substr(0, colon);
@@ -206,7 +225,6 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
             {
                 std::lock_guard<std::mutex> lk(cout_mutex);
                 term::msg(msg.nick, msg.payload);
-                term::prompt("server");
             }
             broadcast(frame, fd);
         } else if (msg.type == MsgType::PONG) {
@@ -237,29 +255,110 @@ static void handle_client(int fd, std::string passphrase, int heartbeat_sec) {
 
 static void operator_loop(const std::string& raw_key) {
     term::sys("press Enter to start chatting...");
-    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+    RawTerm raw_term;
+    signal(SIGWINCH, on_sigwinch);
+
+    { char ch; while (read(STDIN_FILENO, &ch, 1) > 0 && ch != '\n' && ch != '\r') {} }
+
+    {
+        std::lock_guard<std::mutex> lk(cout_mutex);
+        term::screen::init();
+        term::input::nick() = "server";
+        term::input::buf().clear();
+        term::_redraw_input();
+    }
 
     while (running) {
-        term::prompt("server");
-        std::string text;
-        if (!std::getline(std::cin, text)) break;
-        if (text.empty()) continue;
+        if (g_resized.exchange(false)) {
+            std::lock_guard<std::mutex> lk(cout_mutex);
+            term::screen::resize();
+            term::_redraw_input();
+        }
 
-        if (text == "/quit") { running = false; break; }
+        char ch;
+        ssize_t n = read(STDIN_FILENO, &ch, 1);
+        if (n < 0) break;
+        if (n == 0) continue;
 
-        if (text == "/who") {
-            std::lock_guard<std::mutex> lk(peers_mx);
-            std::lock_guard<std::mutex> lk2(cout_mutex);
-            term::sys("online: " + std::to_string(peers.size()) + " client(s)");
-            for (auto& [fd, p] : peers)
-                term::sys("  " + p.nick + " (" + p.addr + ") [fd=" + std::to_string(fd) + "]");
+        if (ch == '\033') { 
+            char seq[3];
+            if (read(STDIN_FILENO, &seq[0], 1) > 0 && seq[0] == '[') {
+                if (read(STDIN_FILENO, &seq[1], 1) > 0) {
+                    if (seq[1] >= '0' && seq[1] <= '9') {
+                        read(STDIN_FILENO, &seq[2], 1);
+                    }
+                }
+            }
             continue;
         }
 
-        Message m; m.type = MsgType::CHAT; m.nick = "server"; m.payload = text;
-        try { broadcast(aes_encrypt(m.encode(), raw_key)); }
-        catch (const std::exception& e) { term::err(e.what()); }
+        if (ch == '\n' || ch == '\r') {
+            std::string text;
+            {
+                std::lock_guard<std::mutex> lk(cout_mutex);
+                text = term::input::buf();
+                term::input::buf().clear();
+                term::_redraw_input();
+            }
+
+            if (text.empty()) continue;
+
+            if (text == "/quit" || text == "/exit") { 
+                running = false; 
+                break; 
+            }
+
+            if (text == "/who") {
+                std::lock_guard<std::mutex> lk(peers_mx);
+                std::lock_guard<std::mutex> lk2(cout_mutex);
+                term::sys("online: " + std::to_string(peers.size()) + " client(s)");
+                for (auto& [fd, p] : peers)
+                    term::sys("  " + p.nick + " (" + p.addr + ") [fd=" + std::to_string(fd) + "]");
+                continue;
+            }
+
+            Message m; m.type = MsgType::CHAT; m.nick = "server"; m.payload = text;
+            try { 
+                broadcast(aes_encrypt(m.encode(), raw_key)); 
+                std::lock_guard<std::mutex> lk(cout_mutex);
+                term::msg("server", text);
+            }
+            catch (const std::exception& e) { 
+                std::lock_guard<std::mutex> lk(cout_mutex);
+                term::err(e.what()); 
+            }
+
+        } else if (ch == 127 || ch == '\b') {
+            std::lock_guard<std::mutex> lk(cout_mutex);
+            std::string& buf = term::input::buf();
+            if (!buf.empty()) {
+                // utf 8 backspace support
+                while (!buf.empty() && (buf.back() & 0xC0) == 0x80) {
+                    buf.pop_back();
+                }
+                if (!buf.empty()) {
+                    buf.pop_back();
+                }
+                term::_redraw_input();
+            }
+
+        } else if (static_cast<unsigned char>(ch) >= 32) {
+            std::lock_guard<std::mutex> lk(cout_mutex);
+            if (term::input::buf().size() < MAX_MSG_LEN) {
+                term::input::buf() += ch;
+                term::_redraw_input();
+            }
+        }
     }
+
+    {
+        std::lock_guard<std::mutex> lk(cout_mutex);
+        term::input::nick().clear();
+        term::input::buf().clear();
+        term::screen::cleanup();
+    }
+    signal(SIGWINCH, SIG_DFL);
 }
 
 void run_server(const std::string& passphrase, const ServerOpts& opts) {

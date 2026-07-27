@@ -125,6 +125,19 @@ static bool run_session(const std::string& host, int port,
         if (n < 0) break;
         if (n == 0) continue;
 
+        // ignore the esc
+        if (ch == '\033') { 
+            char seq[3];
+            if (read(STDIN_FILENO, &seq[0], 1) > 0 && seq[0] == '[') {
+                if (read(STDIN_FILENO, &seq[1], 1) > 0) {
+                    if (seq[1] >= '0' && seq[1] <= '9') {
+                        read(STDIN_FILENO, &seq[2], 1);
+                    }
+                }
+            }
+            continue;
+        }
+
         if (ch == '\n' || ch == '\r') {
             std::string text;
             {
@@ -177,8 +190,15 @@ static bool run_session(const std::string& host, int port,
 
         } else if (ch == 127 || ch == '\b') {
             std::lock_guard<std::mutex> lk(cout_mutex);
-            if (!term::input::buf().empty()) {
-                term::input::buf().pop_back();
+            std::string& buf = term::input::buf();
+            if (!buf.empty()) {
+                // correct deleting
+                while (!buf.empty() && (buf.back() & 0xC0) == 0x80) {
+                    buf.pop_back();
+                }
+                if (!buf.empty()) {
+                    buf.pop_back();
+                }
                 term::_redraw_input();
             }
 
@@ -186,7 +206,7 @@ static bool run_session(const std::string& host, int port,
             std::lock_guard<std::mutex> lk(cout_mutex);
             if (term::input::buf().size() < MAX_MSG_LEN) {
                 term::input::buf() += ch;
-                std::cout << ch << std::flush;
+                term::_redraw_input(); // redrawing
             }
         }
     }
